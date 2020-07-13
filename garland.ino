@@ -14,25 +14,25 @@ SoftwareSerial BTSerial(RX, TX);//bluetooth rx ->arduino tx, bt tx-> arduino rx 
 
 #define PREV 5 //<<
 #define NEXT 4 //>>
-//#define PAUSE 0;
 
 #define BRIGHTP 7
 #define BRIGHTM 8
 
 #define BASE64 9
 
-#define MAX_PRGM 7
+#define MAX_PRGM 9
 
-int WAIT = 90;
+unsigned int WAIT = 90;
 #define WAIT_STEP 10
 byte BRIGHT = 100; 
-byte PRGM = 4;
+byte PRGM = 5;
 
 #define BUF_LENGTH = 10;
 
-char base64Content[4*PIXEL_COUNT + 4];
+String base64Content;
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, NEO_RGB + NEO_KHZ800);
+uint32_t globalColor = strip.Color(255, 255, 255);
 
 void setup() {
 	strip.begin();
@@ -42,77 +42,111 @@ void setup() {
 	strip.setBrightness(BRIGHT);
 	strip.show();
 
-	//Serial.begin(9600);
 	BTSerial.begin(9600);
-	if (DEBUG > 0) {
-		//Serial.print("delay ");
-		//Serial.print(WAIT);
-		//Serial.print(" program ");
-		//Serial.println(PRGM);
-	}
 }
 
 void loop() {
-	if (PRGM == 0) {
+	if (PRGM == 1) {
 		pause();
-	} else if (PRGM == 1) {
-		singleColorIteration();
 	} else if (PRGM == 2) {
-		myPartRainbow();
+		singleColorIteration();
 	} else if (PRGM == 3) {
-		myChaseRainbow();
+		myPartRainbow();
 	} else if (PRGM == 4) {
+		myChaseRainbow();
+	} else if (PRGM == 5) {
 		fullColor(strip.Color(255, 255, 255));
-	} else if (PRGM == 5){
-		fullColor(strip.Color(0, 0, 0));
 	} else if (PRGM == 6) {
-		runningLight(strip.Color(255, 255, 0));
+		fullColor(strip.Color(0, 0, 0));
 	} else if (PRGM == 7) {
-		programmableColor();
-	}
+		runningLight(globalColor);
+	} else if (PRGM == 8) {
+		base64Handler();
+	} else if (PRGM == 9) {
+		fullColor(globalColor);
+	} 
 }
 
-void programmableColor() {
-	byte header[3] = {0, 0, 0};
-	getContent(0, base64Content, header);
-	byte comand = header[0] >> 4;
-	int firstPix = ((header[0] & 0xf) << 6) | (header[1] >> 2);
-	int secondPix = ((header[1] & 0x3) << 8) | header[2];
-	if(comand == 0) {//отобразить полученный результат
-		strip.show();
-	} else if (comand == 1) {//заполнить переданный участок гирлянды
-		for(int i = 0; firstPix+i <= secondPix; ++i) {
-			getContent(1 + i, base64Content, header);
-			strip.setPixelColor(firstPix+i, strip.Color(header[0], header[1], header[2]));
+void base64Handler() {
+	if (base64Content.length() > 0) {
+		byte header[3] = {0, 0, 0};
+		getContent(0, base64Content.c_str(), header);
+		byte comand = getComand(header);
+		//предполагается несколько вызовов comand==1, затем вызов comand==0 
+		if (comand == 0) {//отобразить полученный результат
+			strip.show();
+		} else if (comand == 1) {//заполнить переданный участок гирлянды
+			unsigned int position = getPosition(header);
+			int secondPix = position + base64Content.length() / 4  - 1;
+			for (int i = 0; position+i <= secondPix; ++i) {
+				getContent(1 + i, base64Content.c_str(), header);
+				strip.setPixelColor(position+i, strip.Color(header[0], header[1], header[2]));
+			}
+		} else if (comand == 2) {//clear
+			for (int i = 0; i < PIXEL_COUNT; ++i) {
+				strip.setPixelColor(i, strip.Color(0, 0, 0));//rgb
+			}
+			strip.show();
+		} else if (comand == 3) {//set params manually (prgm {1, value, 0}, delay{2, byte2, byte1}, bright{3, value, 0}, color{4, 0, 0,   r, g, b})
+			int size = base64Content.length() / 4 - 1;
+			for (int i = 0; i < size; ++i) {
+				getContent(i + 1, base64Content.c_str(), header);
+				if (header[0] == 1) {//prgm
+					PRGM = header[1];
+					if (DEBUG > 0) {
+						BTSerial.write("set prgm ");
+						BTSerial.write(String(PRGM).c_str());
+						BTSerial.write("\r\n");
+					}
+				} else if (header[0] == 2) {//wait
+					WAIT = (header[1] << 8) | header[2];
+					if (DEBUG > 0) {
+						BTSerial.write("set wait ");
+						BTSerial.write(String(WAIT).c_str());
+						BTSerial.write("\r\n");
+					}
+				} else if (header[0] == 3) {//bright
+					BRIGHT = header[1];
+					if (DEBUG > 0) {
+						BTSerial.write("set bright ");
+						BTSerial.write(String(BRIGHT).c_str());
+						BTSerial.write("\r\n");
+					}
+				} else if (header[0] == 4) {
+					++i;
+					getContent(i + 1, base64Content.c_str(), header);
+					globalColor = strip.Color(header[0], header[1], header[2]);
+					if (DEBUG > 0) {
+						BTSerial.write("set color ");
+						BTSerial.write(String(header[0]).c_str());
+						BTSerial.write(" ");
+						BTSerial.write(String(header[1]).c_str());
+						BTSerial.write(" ");
+						BTSerial.write(String(header[2]).c_str());
+						BTSerial.write("\r\n");
+					}
+				}
+			}
 		}
-	} else if(comand == 2) {//clear
-		for (int i = 0; i < PIXEL_COUNT; ++i) {
-			strip.setPixelColor(i, strip.Color(0, 0, 0));//rgb
-		}
-		strip.show();
+		base64Content = "";
 	}
 	delay(WAIT);
 	serialHandler();
 }
 
-void fullColor(uint32_t color) {
+int fullColor(uint32_t color) {
 	for (int i = 0; i < PIXEL_COUNT; ++i) {
-		strip.setPixelColor(i, color);//rgb
+		strip.setPixelColor(i, color);
 	}
 	strip.show();
 	delay(WAIT);
-	serialHandler();
+	return serialHandler();
 }
 
 void singleColorIteration() {
 	for (int j = 0; j < 1536; ++j) {
 		uint32_t color = getRGB(j);
-		for (int i = 0; i < PIXEL_COUNT; ++i) {
-			strip.setPixelColor(i, color);
-		}
-		strip.show();
-		delay(WAIT);
-		if (serialHandler() == 1) {
+		if (fullColor(color) == 1) {
 			return;
 		}
 	}
@@ -206,9 +240,7 @@ int signalCatcher() {
 			result = BRIGHTM;
 		} else if(command.length() > 0 && command.length() % 4 == 0) {
 			result = BASE64;
-			for(int i = 0; i < command.length(); ++i) {
-				base64Content[i] = command[i];
-			}
+			base64Content = command;
 		}
 	}
 	return result;
@@ -243,7 +275,7 @@ int serialHandler() {
 			return 1;
 		}
 	} else if (button == CHM) {
-		if (PRGM > 0) {
+		if (PRGM > 1) {
 			--PRGM;
 			if (DEBUG > 0) {
 				BTSerial.write("program changed to ");
@@ -269,20 +301,22 @@ int serialHandler() {
 			BTSerial.write("\r\n");
 		}
 	} else if (button == BASE64) {
+		PRGM = 8;
 		if (DEBUG > 0) {
 			BTSerial.write("base64 ");
 			byte header[3] = {0, 0, 0};
-			getContent(0, base64Content, header);
-			byte comand = header[0] >> 4;
+			getContent(0, base64Content.c_str(), header);
+			byte comand = getComand(header);
 			BTSerial.write(String(comand).c_str());
-			BTSerial.write(" ");
-			int firstPix = ((header[0] & 0xf) << 6) | (header[1] >> 2);
-			BTSerial.write(String(firstPix).c_str());
-			BTSerial.write(" ");
-			int secondPix = ((header[1] & 0x3) << 8) | header[2];
-			BTSerial.write(String(secondPix).c_str());
+			BTSerial.write(", position:");
+			unsigned int position = getPosition(header);
+			BTSerial.write(String(position).c_str());
+			BTSerial.write(", size:");
+			unsigned int size = base64Content.length() / 4 - 1;
+			BTSerial.write(String(size).c_str());
 			BTSerial.write("\r\n");
 		}
+		return 1;
 	}
 	return 0;
 }
@@ -298,7 +332,7 @@ byte posCalc(char c) {
 	return 0;
 }
 
-void getContent(int pos, char* base64Content, byte* result) {
+void getContent(int pos, const char* base64Content, byte* result) {
 	byte a = posCalc(base64Content[0 + pos * 4]);
 	byte b = posCalc(base64Content[1 + pos * 4]);
 	byte c = posCalc(base64Content[2 + pos * 4]);
@@ -308,10 +342,14 @@ void getContent(int pos, char* base64Content, byte* result) {
 	result[2] = ((c & 0x3) << 6) | d;
 }
 
-byte getComand(char* base64Content) {
-	byte a = posCalc(base64Content[0]);
-	return a >> 2;
+byte getComand(byte* header) {
+	return header[0];
 }
+
+unsigned int getPosition(byte* header) {
+	return (header[1] << 8) | header[2];
+}
+
 //   0-255   256-511   512-767   768-1023   1024-1279   1280-1535
 //---------------------------------------------------------------
 //r   255     255-0       0         0         0-255        255
@@ -352,22 +390,20 @@ int to1536(int position, int total) {
 }
 
 /*base64 method doc
-1111                          1111 |  1111 11            11  |  1111 1111
-тип команды 4 бита
-                          номер 1ого в пакете
-                          от 0 до 1023 (10 бит)
-                                                   номер последнего пиксела (включительно)
-                                                   в пакете от 0 до 1023  (10 бит)
+11111111                 |  1111 1111  1111 1111
+тип команды 8 бит
+                          номер позиции 0ого пиксела из команды во всей гирлянде
+                          от 0 до 65535 (16 бит)
 
 
 тип команд:
-1 - заполнить гирлядну значениями
 0 - отрисовать (show) гирлянду (передается только заголовок из 3 байт)
+1 - заполнить гирлядну значениями
 2 - очистить гирлянду (передается только заголовок из 3 байт)
-
+3 - задать глобальные параметры: цвет, программу, яркость, частоту
 
 
 
 15 пикс - 45 байт 60 символов
-
+1 пикс = 1 группа из 4х символов base64
 */
