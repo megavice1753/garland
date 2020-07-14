@@ -11,13 +11,11 @@ SoftwareSerial BTSerial(RX, TX);//bluetooth rx ->arduino tx, bt tx-> arduino rx 
 
 #define CHP 1 //ch plus
 #define CHM 2 //ch minus
-
 #define PREV 5 //<<
 #define NEXT 4 //>>
-
+#define PAUSE 6
 #define BRIGHTP 7
 #define BRIGHTM 8
-
 #define BASE64 9
 
 #define MAX_PRGM 9
@@ -27,11 +25,9 @@ unsigned int WAIT = 90;
 byte BRIGHT = 100; 
 byte PRGM = 5;
 
-#define BUF_LENGTH = 10;
-
 String base64Content;
 
-Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, NEO_RGB + NEO_KHZ800);
+Adafruit_NeoPixel strip = Adafruit_NeoPixel(PIXEL_COUNT, PIXEL_PIN, NEO_GRB + NEO_KHZ800);
 uint32_t globalColor = strip.Color(255, 255, 255);
 
 void setup() {
@@ -46,9 +42,7 @@ void setup() {
 }
 
 void loop() {
-	if (PRGM == 1) {
-		pause();
-	} else if (PRGM == 2) {
+	if (PRGM == 2) {
 		singleColorIteration();
 	} else if (PRGM == 3) {
 		myPartRainbow();
@@ -64,7 +58,9 @@ void loop() {
 		base64Handler();
 	} else if (PRGM == 9) {
 		fullColor(globalColor);
-	} 
+	} else {
+		doNothing();
+	}
 }
 
 void base64Handler() {
@@ -152,7 +148,7 @@ void singleColorIteration() {
 	}
 }
 
-void pause() {
+void doNothing() {
 	delay(WAIT);
 	serialHandler();
 }
@@ -226,7 +222,7 @@ int signalCatcher() {
 			}
 			BTSerial.write("!!\r\n");
 		}
-		if(command == "CHP" || command == "chp") {
+		if (command == "CHP" || command == "chp") {
 			result = CHP;
 		} else if (command == "CHM" || command == "chm") {
 			result = CHM;
@@ -234,20 +230,28 @@ int signalCatcher() {
 			result = PREV;
 		} else if (command == "NXT" || command == "nxt") {
 			result = NEXT;
-		} else if(command == "BRP" || command == "brp") {
+		} else if (command == "BRP" || command == "brp") {
 			result = BRIGHTP;
 		} else if (command == "BRM" || command == "brm") {
 			result = BRIGHTM;
-		} else if(command.length() > 0 && command.length() % 4 == 0) {
+		} else if (command.length() > 0 && command.length() % 4 == 0) {
 			result = BASE64;
 			base64Content = command;
+		} else if (command == "PAUSE" || command == "pause") {
+			result = PAUSE;
 		}
 	}
 	return result;
 }
 
 int serialHandler() {
-	int button = signalCatcher();
+	return serialHandler(0);
+}
+//0 - обычное поведение, продолжать выполнять текущую задачу
+//1 - прервать выполнение текущей задачи
+//btn != 0  - состояние после паузы, нужно обработать последнюю команду
+int serialHandler(int btn) {
+	int button = btn == 0 ? signalCatcher() : btn;
 	if (button == PREV) { //prev == slow down
 		WAIT += WAIT_STEP;
 		if (DEBUG > 0) {
@@ -275,7 +279,7 @@ int serialHandler() {
 			return 1;
 		}
 	} else if (button == CHM) {
-		if (PRGM > 1) {
+		if (PRGM > 2) {
 			--PRGM;
 			if (DEBUG > 0) {
 				BTSerial.write("program changed to ");
@@ -317,6 +321,13 @@ int serialHandler() {
 			BTSerial.write("\r\n");
 		}
 		return 1;
+	} else if (button == PAUSE && btn == 0) {
+		int button2 = 0;
+		do {
+			delay(WAIT);
+			button2 = signalCatcher();
+		} while (button2 == -1);
+		return serialHandler(button2);
 	}
 	return 0;
 }
