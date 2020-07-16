@@ -18,7 +18,7 @@ SoftwareSerial BTSerial(RX, TX);//bluetooth rx ->arduino tx, bt tx-> arduino rx 
 #define BRIGHTM 8
 #define BASE64 9
 
-#define MAX_PRGM 9
+#define MAX_PRGM 8
 
 unsigned int WAIT = 90;
 #define WAIT_STEP 10
@@ -32,12 +32,7 @@ uint32_t globalColor = strip.Color(255, 255, 255);
 
 void setup() {
 	strip.begin();
-	for (int i = 0; i < PIXEL_COUNT; ++i) {
-		strip.setPixelColor(i, strip.Color(0, 0, 0));
-	}
 	strip.setBrightness(BRIGHT);
-	strip.show();
-
 	BTSerial.begin(9600);
 }
 
@@ -49,45 +44,58 @@ void loop() {
 	} else if (PRGM == 4) {
 		myChaseRainbow();
 	} else if (PRGM == 5) {
-		fullColor(strip.Color(255, 255, 255));
+		uint32_t tmp = strip.Color(255, 255, 255);
+		fullColor(tmp);
 	} else if (PRGM == 6) {
-		fullColor(strip.Color(0, 0, 0));
+		uint32_t tmp = strip.Color(0, 0, 0);
+		fullColor(tmp);
 	} else if (PRGM == 7) {
-		runningLight(globalColor);
+		runningLight();
 	} else if (PRGM == 8) {
-		base64Handler();
-	} else if (PRGM == 9) {
 		fullColor(globalColor);
 	} else {
 		doNothing();
 	}
 }
 
-void base64Handler() {
+int base64Handler() {
+	int result = 0;
 	if (base64Content.length() > 0) {
 		byte header[3] = {0, 0, 0};
 		getContent(0, base64Content.c_str(), header);
 		byte comand = getComand(header);
-		//предполагается несколько вызовов comand==1, затем вызов comand==0 
+		//предполагается несколько вызовов comand==1, затем вызов comand==0
+		//command == 0 более не нужен, отображение осуществляется сразу при заполнении
+		
 		if (comand == 0) {//отобразить полученный результат
 			strip.show();
+			result = 1;
+			PRGM = 0;//doNothing
 		} else if (comand == 1) {//заполнить переданный участок гирлянды
+			//этот кусок теперь не работает, надо думать, где хранить временную информацию о цветах перед отрисовкой
+			//либо использовать сочетание очистки + этот метод
 			unsigned int position = getPosition(header);
 			int secondPix = position + base64Content.length() / 4  - 1;
 			for (int i = 0; position+i <= secondPix; ++i) {
 				getContent(1 + i, base64Content.c_str(), header);
 				strip.setPixelColor(position+i, strip.Color(header[0], header[1], header[2]));
 			}
+			strip.show();
+			result = 1;
+			PRGM = 0;//doNothing
 		} else if (comand == 2) {//clear
 			for (int i = 0; i < PIXEL_COUNT; ++i) {
 				strip.setPixelColor(i, strip.Color(0, 0, 0));//rgb
 			}
 			strip.show();
-		} else if (comand == 3) {//set params manually (prgm {1, value, 0}, delay{2, byte2, byte1}, bright{3, value, 0}, color{4, 0, 0,   r, g, b})
+			result = 1;
+			PRGM = 0;//doNothing
+		} else if (comand == 3) {//set params in any order manually (prgm {1, value, 0}, delay{2, byte2, byte1}, bright{3, value, 0}, color{4, 0, 0,   r, g, b})
 			int size = base64Content.length() / 4 - 1;
 			for (int i = 0; i < size; ++i) {
 				getContent(i + 1, base64Content.c_str(), header);
 				if (header[0] == 1) {//prgm
+					result = 1;
 					PRGM = header[1];
 					if (DEBUG > 0) {
 						BTSerial.write("set prgm ");
@@ -108,7 +116,7 @@ void base64Handler() {
 						BTSerial.write(String(BRIGHT).c_str());
 						BTSerial.write("\r\n");
 					}
-				} else if (header[0] == 4) {
+				} else if (header[0] == 4) {//color
 					++i;
 					getContent(i + 1, base64Content.c_str(), header);
 					globalColor = strip.Color(header[0], header[1], header[2]);
@@ -126,11 +134,10 @@ void base64Handler() {
 		}
 		base64Content = "";
 	}
-	delay(WAIT);
-	serialHandler();
+	return result;
 }
 
-int fullColor(uint32_t color) {
+int fullColor(uint32_t& color) {
 	for (int i = 0; i < PIXEL_COUNT; ++i) {
 		strip.setPixelColor(i, color);
 	}
@@ -153,16 +160,16 @@ void doNothing() {
 	serialHandler();
 }
 
-void runningLight(uint32_t color) {
+void runningLight() {
 	for (int i = 0; i < PIXEL_COUNT; ++i) {
 		strip.setPixelColor(i, strip.Color(0, 0, 0));//rgb
 	}
-	for(int i = 0; i < PIXEL_COUNT; ++i) {
-		for(int j = 0; j < PIXEL_COUNT - i; ++j) {
+	for (int i = 0; i < PIXEL_COUNT; ++i) {
+		for (int j = 0; j < PIXEL_COUNT - i; ++j) {
 			strip.setPixelColor(PIXEL_COUNT - j, strip.Color(0, 0, 0));//rgb
-			strip.setPixelColor(PIXEL_COUNT - j - 1, color);//rgb
+			strip.setPixelColor(PIXEL_COUNT - j - 1, globalColor);//rgb
 			strip.show();
-			delay(WAIT*4);
+			delay(WAIT);
 			if (serialHandler() == 1) {
 				return;
 			}
@@ -175,8 +182,8 @@ void myPartRainbow() {
 	//1536 цветов слишком много, даже на 150 пикселах кажется, что они все одного цвета
 	//сократим в n раз
 	int n = 6;
-	for(int j = 0; j < 1536; j += 1) {
-		for(int i = 0; i < PIXEL_COUNT; ++i) {
+	for (int j = 0; j < 1536; j += 1) {
+		for (int i = 0; i < PIXEL_COUNT; ++i) {
 			int colorIndx = (j + i * n) % 1536;
 			uint32_t color = getRGB(colorIndx);
 			strip.setPixelColor(i, color);
@@ -191,8 +198,8 @@ void myPartRainbow() {
 
 //ужимает радугу до размера гирлянды
 void myChaseRainbow() {
-	for(int j = 0; j < 1536; ++j) {
-		for(int i = 0; i < PIXEL_COUNT; ++i) {
+	for (int j = 0; j < 1536; ++j) {
+		for (int i = 0; i < PIXEL_COUNT; ++i) {
 			int colorIndx = to1536(i + j, PIXEL_COUNT);
 			uint32_t color = getRGB(colorIndx);
 			strip.setPixelColor(i, color);
@@ -305,7 +312,6 @@ int serialHandler(int btn) {
 			BTSerial.write("\r\n");
 		}
 	} else if (button == BASE64) {
-		PRGM = 8;
 		if (DEBUG > 0) {
 			BTSerial.write("base64 ");
 			byte header[3] = {0, 0, 0};
@@ -320,14 +326,13 @@ int serialHandler(int btn) {
 			BTSerial.write(String(size).c_str());
 			BTSerial.write("\r\n");
 		}
-		return 1;
+		return base64Handler();
 	} else if (button == PAUSE && btn == 0) {
-		int button2 = 0;
 		do {
 			delay(WAIT);
-			button2 = signalCatcher();
-		} while (button2 == -1);
-		return serialHandler(button2);
+			button = signalCatcher();
+		} while (button == -1);
+		return serialHandler(button);
 	}
 	return 0;
 }
@@ -335,8 +340,8 @@ int serialHandler(int btn) {
 const char* alphaBet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
 byte posCalc(char c) {
-	for(byte i = 0; i < 64; ++i) {
-		if(alphaBet[i] == c) {
+	for (byte i = 0; i < 64; ++i) {
+		if (alphaBet[i] == c) {
 			return i;
 		}
 	}
@@ -368,22 +373,22 @@ unsigned int getPosition(byte* header) {
 //b    0        0       0-255      255         255        255-0
 uint32_t getRGB(int val) {
 	byte res[3] = {0, 0, 0};
-	if(val < 256) {
+	if (val < 256) {
 		res[0] = 255;
 		res[1] = val % 256;
-	} else if(val < 512) {
+	} else if (val < 512) {
 		res[0] = 255 - val % 256;
 		res[1] = 255;
-	} else if(val < 768) {
+	} else if (val < 768) {
 		res[1] = 255;
 		res[2] = val % 256;
-	} else if(val < 1024) {
+	} else if (val < 1024) {
 		res[1] = 255 - val % 256;
 		res[2] = 255;
-	} else if(val < 1280) {
+	} else if (val < 1280) {
 		res[0] = val % 256;
 		res[2] = 255;
-	} else if(val < 1536) {
+	} else if (val < 1536) {
 		res[0] = 255;
 		res[2] = 255 - val % 256;
 	} else {
